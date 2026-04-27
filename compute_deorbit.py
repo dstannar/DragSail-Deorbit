@@ -5,14 +5,14 @@ import numpy as np
 def compute_deorbit(
     t,
     state,
-    muE,
-    Re_km,
-    J2,
-    Cd,
+    muE=398600,
+    Re_km=6378,
+    J2=1.08262668e-3,
+    Cd=2.2,
     area_m2,
     mass_kg,
-    omegaE_rad_s,
-    Cr,
+    omegaE_rad_s=7.2921150e-5,
+    Cr=1.3,
     r_sun_km=None,
 ):
     """
@@ -24,6 +24,7 @@ def compute_deorbit(
         Time [s]
     state : ndarray, shape (6,)
         [x, y, z, vx, vy, vz] in km and km/s
+        
 
     Returns
     -------
