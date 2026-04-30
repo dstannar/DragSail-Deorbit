@@ -4,9 +4,17 @@
 
 import numpy as np
 
-def srp_acceleration(r_sc, r_sun, mass, area_m2, Cr,
-                     P0=4.56e-6, AU_km=149597870.691,
-                     eclipse=True, Re=6378.0):
+def srp_acceleration(
+        r_sc: np.ndarray, 
+        r_sun: np.ndarray,
+        mass: float, 
+        area_m2: float, 
+        Cr: float,
+        P0=4.56e-6, 
+        AU_km: float = 149597870.691,
+        eclipse: bool = True, 
+        Re: float = 6378.0
+    ) -> float:
     """
     Compute Solar Radiation Pressure (SRP) acceleration.
 
