@@ -15,13 +15,15 @@ import astropy.units as u
 
 from datetime import timedelta, timezone
 
-# define epoch (you choose reference)
-t0 = Time("2026-04-26T21:29:00", scale="utc")
+from typing import Callable
 
-SPACE_WEATHER = gmm.build_space_weather_profile(
-    start=t0.to_datetime(timezone=timezone.utc),
-    years=5,
-)
+t0 = 0
+SPACE_WEATHER = 0
+
+t_sun = 0
+r_sun_table = 0
+t_moon = 0
+r_moon_table = 0
 
 def sun_vector_eci(t_seconds):
     t = t0 + t_seconds * u.s
@@ -39,13 +41,6 @@ def moon_vector_eci(t_seconds):
     r_moon_km = moon.cartesian.xyz.to(u.km).value
     return r_moon_km
 
-# Pre-calculate Sun and Moon positions
-t_sun = np.linspace(0, 5 * 365 * 24 * 3600, 2000)  
-r_sun_table = np.array([sun_vector_eci(ti) for ti in t_sun])
-
-t_moon = np.linspace(0, 5 * 365 * 24 * 3600, 20000)
-r_moon_table = np.array([moon_vector_eci(ti) for ti in t_moon])
-
 def interp_sun(t):
     return np.array([
     np.interp(t, t_sun, r_sun_table[:, i]) for i in range(3)
@@ -58,18 +53,61 @@ def interp_moon(t):
 
 
 def deorbit_rhs(
-    t,
-    state,
-    area_m2,
-    mass_kg,
-    muE=398600.0,          # km^3/s^2
-    muSun=1.3271244e11,    # km^3/s^2
-    muMoon=4902.8,         # km^3/s^2
-    Re_km=6378.0,
-    Cd=2.2,
-    Cr=1.3,
-    omegaE_rad_s=7.2921150e-5
-):
+    t: float,
+    state: np.ndarray,
+    area_fun: Callable[[float, np.ndarray], float],
+    mass_fun: Callable[[float, np.ndarray], float],
+    muE: float=398600.0,          
+    muSun: float = 1.3271244e11,    
+    muMoon: float = 4902.8,         
+    Re_km: float = 6378.0,
+    Cd: float = 2.2,
+    Cr: float = 1.3,
+    omegaE_rad_s: float = 7.2921150e-5
+) -> np.ndarray:
+    """
+    Propagate Spacecraft Deorbit.
+
+    Parameters
+    ----------
+    t : float
+        Current time after deployment [s]
+
+    state : ndarray (6,)
+        Spacecraft position and velocity vector in ECI [km] & [km/s]
+
+    area_fun : function
+        Effective cross-sectional area, as a function of time and current state [m^2]
+
+    mass_fun : function
+        Spacecraft mass, as a function of time and current state [kg]
+
+    muE : float, optional
+        The Earth's gravitational parameter [km^3/s^2]
+
+    muSun : float, optional
+        The Sun's gravitational parameter [km^3/s^2]
+
+    muMoon : float, optional
+        The Moon's gravitational parameter [km^3/s^2]
+
+    Re_km : float, optional
+        Radius of the Earth [km]
+
+    Cd : float, optional
+        Drag coefficient 
+
+    Cr : float, optional
+        Reflectivity coefficient
+
+    omegaE_rad_s : float, optional
+        Rotational rate of the Earth [rad/s]
+
+    Returns
+    -------
+    fstate : ndarray (6,)
+        Spacecraft propagated velocity and acceleration vector in ECI [km/s] & [km/s^2]
+    """
     r = state[:3]
     v = state[3:]
 
@@ -78,6 +116,10 @@ def deorbit_rhs(
     # Calculate pure distance and velocity
     rmag = np.linalg.norm(r)
     vmag = np.linalg.norm(v)
+
+    # Propagate changes in area / mass
+    area_m2 = area_fun(t, state)
+    mass_kg = mass_fun(t, state)
 
 
     # Two-body gravity
@@ -97,7 +139,7 @@ def deorbit_rhs(
         SPACE_WEATHER=SPACE_WEATHER
     )
     
-    # J2
+    # J2 Perturbations
     a_j2 = jm.j2_acceleration(
         r=r,
         muE=muE,
@@ -105,17 +147,17 @@ def deorbit_rhs(
         J2=1.08262668e-3,
     )
 
-    # Sun and Moon
+    # Sun and Moon positions
     r_sun = interp_sun(t)
     rSunMag = np.linalg.norm(r_sun)
     r_moon = interp_moon(t)
     rMoonMag = np.linalg.norm(r_moon)
 
+    # Sun and Moon gravitational accelerations
     a_3b_sun  = muSun  * ( (r_sun  - r)/np.linalg.norm(r_sun  - r)**3 - r_sun /rSunMag**3 )
     a_3b_moon = muMoon * ( (r_moon - r)/np.linalg.norm(r_moon - r)**3 - r_moon/rMoonMag**3 );
-    
 
-    # SRP (optional for now)
+    # SRP
     a_srp = srpm.srp_acceleration(
         r_sc=r,
         r_sun=interp_sun(t),
@@ -125,12 +167,14 @@ def deorbit_rhs(
         Re=Re_km,
     )
 
+    # Calculate total drag vector
     a_total = a_tb + a_drag + a_srp + a_j2 + a_3b_moon + a_3b_sun
 
     return np.hstack((v, a_total))
 
 
 def hit_earth_event(t, state, Re_km=6378.0):
+    
     r = state[:3]
     return np.linalg.norm(r) - Re_km
 
@@ -139,13 +183,41 @@ hit_earth_event.direction = -1
 
 
 def compute_deorbit(
-    state0,
-    area_m2,
-    mass_kg,
-    t_final=5 * 365 * 24 * 3600,   # 5 years
-    n_eval=5000,
-    fixed_drag_km_s2=1e-8,
-):
+    state0: np.ndarray,
+    area_fun: Callable[[float, np.ndarray], float],
+    mass_fun: Callable[[float, np.ndarray], float],
+    t_initial: str,
+    t_final: float = 5 * 365 * 24 * 3600,   # 5 years
+    n_eval: float = 5000
+) -> float:
+    """
+    Compute and Plot Deorbit Time.
+
+    Parameters
+    ----------
+    state0 : ndarray (6,)
+        Spacecraft position and velocity vector in ECI [km] & [km/s]
+
+    area_fun : function
+        Effective cross-sectional area, as a function of time and current state [m^2]
+
+    mass_fun : function
+        Spacecraft mass, as a function of time and current state [kg]
+
+    t_initial : str
+        Deployment time, expressed in UTC (e.g. 2015-04-15T15:27:34)
+
+    t_final : float, optional
+        The maximum length of time to compute [s]
+
+    n_eval : float, optional
+        The number of points plotted
+
+    Returns
+    -------
+    sol : float
+        Deorbit time [s]
+    """
     t_span = (0.0, t_final)
     t_eval = np.linspace(t_span[0], t_span[1], n_eval)
 
@@ -158,13 +230,36 @@ def compute_deorbit(
     event.terminal = True
     event.direction = -1
 
+    global t0 
+
+    t0 = Time(t_initial, scale="utc")
+
+    global t_sun
+    global r_sun_table
+
+    global t_moon
+    global r_moon_table
+
+    # Pre-calculate Sun and Moon positions
+    t_sun = np.linspace(0, t_final, 2000)  
+    r_sun_table = np.array([sun_vector_eci(ti) for ti in t_sun])
+
+    t_moon = np.linspace(0, t_final, 20000)
+    r_moon_table = np.array([moon_vector_eci(ti) for ti in t_moon])
+
+    global SPACE_WEATHER
+
+    SPACE_WEATHER = gmm.build_space_weather_profile(
+        start=t0.to_datetime(timezone=timezone.utc),
+        years=5,
+    )
 
 
     sol = solve_ivp(
         fun=deorbit_rhs,
         t_span=t_span,
         y0=state0,
-        args=(area_m2, mass_kg, 398600.0, 1.3271244e11, 4902.8, 6378.0, 2.2, 1.3, 7.2921150e-5),
+        args=(area_fun, mass_fun, 398600.0, 1.3271244e11, 4902.8, 6378.0, 2.2, 1.3, 7.2921150e-5),
         t_eval=t_eval,
         events=event,
         rtol=1e-5,
@@ -172,6 +267,7 @@ def compute_deorbit(
         method="DOP853",
     )
     
+    # Plot altitude vs time
     t_plot = sol.t.copy()
     r_plot = sol.y[:3, :].copy()
 
@@ -228,6 +324,15 @@ def compute_deorbit(
 
     return sol
 
+""" 
+# Test functions and call:
+
+def area_fun(t, state):
+    return 0.03
+
+def mass_fun(t, state):
+    return 5
 
 
-# Test Case (0.03m^2 Area, 5kg Mass): compute_deorbit([6778, 0, 0, 0, 7.67, 0], 0.03, 5)
+Test case compute_deorbit([6778, 0, 0, 0, 7.67, 0], area_fun, mass_fun, "2026-04-26T21:29:00")
+"""
