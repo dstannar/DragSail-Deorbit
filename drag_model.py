@@ -4,14 +4,14 @@ from datetime import datetime, timedelta, timezone
 from nrlmsise00.dataset import msise_4d
 from nrlmsise00 import msise_model
 
+import pandas as pd
+
 from astropy import coordinates as coord
 from astropy import units as u
 from astropy.time import Time
 from astropy.coordinates import CartesianRepresentation, GCRS, ITRS
 
 import geomag_model as gmm
-
-
 
 def msis_density_kg_m3(t_dt, alt_km: float, lat_deg: float, lon_deg: float, SPACE_WEATHER) -> float:
     """
@@ -37,8 +37,8 @@ def msis_density_kg_m3(t_dt, alt_km: float, lat_deg: float, lon_deg: float, SPAC
 
 
 def drag_acceleration(
-    t0,
-    t,
+    t0: Time,
+    t: float,
     r_eci_km: np.ndarray,
     v_eci_km_s: np.ndarray,
     Cd: float,
@@ -46,11 +46,48 @@ def drag_acceleration(
     mass_kg: float,
     Re_km: float = 6378.0,
     omegaE_rad_s: float = 7.2921150e-5,
-     SPACE_WEATHER=None
-) -> np.ndarray:
+    SPACE_WEATHER: pd.DataFrame = None
+) -> float:
     """
-    Compute atmospheric drag acceleration in ECI coordinates.
-    Returns drag acceleration in km/s^2.
+    Compute Drag acceleration.
+    Uses NRLMSISE-00 Model
+
+    Parameters
+    ----------
+    t0 : Time (astropy)
+        Deployment time
+    
+    t : float
+        Current time after deployment [s]
+
+    r_eci_km : ndarray (3,)
+        Spacecraft position vector in ECI [km]
+
+    v_eci_km_s : ndarray (3,)
+        Spacecraft velocity vector in ECI [km/s]
+
+    Cd : float
+        Drag coefficient [kg]
+
+     area_m2 : float
+        Effective cross-sectional area [m^2]
+
+    mass : float
+        Spacecraft mass [kg]
+
+    Re_km : float, optional
+        Radius of the Earth [km]
+    
+    omegaE_rad_s : float, optional
+        Rotational rate of the Earth [rad/s]
+
+    SPACE_WEATHER : DataFrame (pandas)
+        Space weather 5-year prediction profile based on NOAA and NASA forecast
+
+    Returns
+    -------
+    a_drag_km_s2 : float
+        Drag acceleration vector [km/s^2]
     """
     r_eci_km = np.asarray(r_eci_km, dtype=float).reshape(3,)
     v_eci_km_s = np.asarray(v_eci_km_s, dtype=float).reshape(3,)
